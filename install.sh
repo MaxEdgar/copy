@@ -6,9 +6,6 @@
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/MaxEdgar/copy/main/install.sh | bash
 #
-# Uninstall:
-#   curl -fsSL https://raw.githubusercontent.com/MaxEdgar/copy/main/install.sh | bash -s -- --remove
-#
 set -Eeuo pipefail
 
 REPO="MaxEdgar/copy"
@@ -56,83 +53,14 @@ require() {
     exit 1
   }
 }
-
-# ---------------------------------------------------------------------------
-# Argument parsing
-# ---------------------------------------------------------------------------
-ACTION="install"
-for arg in "$@"; do
-  case "$arg" in
-    --remove|--uninstall)
-      ACTION="uninstall"
-      ;;
-    -h|--help)
-      cat <<EOF
-Usage: install.sh [OPTION]
-
-  (no options)      install or update ${NAME} to ${INSTALL_PATH}
-  --remove          uninstall ${NAME} and remove all installed files
-  -h, --help        show this help message
-EOF
-      exit 0
-      ;;
-    *)
-      warn "Unknown option: $arg"
-      ;;
-  esac
-done
-
-# ---------------------------------------------------------------------------
-# Uninstall
-# ---------------------------------------------------------------------------
-uninstall() {
-  printf "%s%s uninstaller%s\n" "$BOLD" "$NAME" "$RESET"
-  printf "%sremoves %s and any files installed alongside it%s\n\n" "$DIM" "$NAME" "$RESET"
-
-  local found=0
-  local targets=(
-    "$INSTALL_PATH"
-    "/usr/local/share/man/man1/${NAME}.1"
-    "/usr/share/man/man1/${NAME}.1.gz"
-  )
-
-  for path in "${targets[@]}"; do
-    if [[ -e "$path" ]]; then
-      found=1
-      info "Removing ${path}..."
-      if [[ -w "$(dirname "$path")" ]]; then
-        rm -f "$path"
-      else
-        sudo rm -f "$path"
-      fi
-      success "Removed ${path}"
-    fi
-  done
-
-  if [[ "$found" -eq 0 ]]; then
-    warn "No installed files found, nothing to remove"
-    exit 0
-  fi
-
-  if command -v "$NAME" >/dev/null 2>&1; then
-    warn "'${NAME}' is still on PATH at $(command -v "$NAME"), remove it manually if needed"
-  else
-    success "${NAME} has been fully uninstalled"
-  fi
-  exit 0
-}
-
-require rm
-[[ "$ACTION" == "uninstall" ]] && uninstall
-
 require curl
 require uname
 require mktemp
 require mv
 require chmod
+require rm
 
-printf "%s%s installer%s\n" "$BOLD" "$NAME" "$RESET"
-printf "%sinstalls the latest release of %s to %s%s\n\n" "$DIM" "$NAME" "$INSTALL_PATH" "$RESET"
+printf "%s%s installer%s\n\n" "$BOLD" "$NAME" "$RESET"
 
 # ---------------------------------------------------------------------------
 # Detect OS / architecture
@@ -174,8 +102,8 @@ if RELEASE_JSON="$($CURL "$API_URL" 2>/dev/null)"; then
 fi
 
 if [[ -n "$LATEST_TAG" ]]; then
-  success "Latest version: ${BOLD}${LATEST_TAG}${RESET}"
   BASE_URL="https://github.com/${REPO}/releases/download/${LATEST_TAG}"
+  success "Latest version available: ${BOLD}${LATEST_TAG}${RESET}"
 else
   warn "Could not query GitHub API, falling back to the latest-release redirect"
   BASE_URL="https://github.com/${REPO}/releases/latest/download"
@@ -185,81 +113,147 @@ ASSET_URL="${BASE_URL}/${ASSET}"
 CHECKSUMS_URL="${BASE_URL}/SHA256SUMS"
 
 # ---------------------------------------------------------------------------
-# Check existing installation
+# Helpers
 # ---------------------------------------------------------------------------
-if command -v "$NAME" >/dev/null 2>&1; then
-  CURRENT_VERSION="$("$NAME" --version 2>/dev/null || echo "unknown")"
-  info "Existing installation found (${CURRENT_VERSION}), it will be updated"
-fi
+get_installed_version() {
+  local ver
+  ver="$("$INSTALL_PATH" --version 2>/dev/null | head -n1 || true)"
+  printf '%s' "$ver"
+}
 
-# ---------------------------------------------------------------------------
-# Download
-# ---------------------------------------------------------------------------
-TMP_DIR="$(mktemp -d)"
-TMP_FILE="${TMP_DIR}/${ASSET}"
+prompt() {
+  # Prints $1 to the user and stores their reply in REPLY.
+  # Falls back to $2 (default) if no interactive terminal is available.
+  local message="$1"
+  local default="$2"
+  REPLY=""
+  if exec 3<>/dev/tty 2>/dev/null; then
+    printf "%s" "$message" >&3
+    read -r REPLY <&3 || REPLY=""
+    exec 3<&- 3>&-
+  else
+    warn "No interactive terminal available, defaulting to '${default}'"
+    REPLY="$default"
+  fi
+}
 
-info "Downloading ${ASSET}..."
-if ! $CURL "$ASSET_URL" -o "$TMP_FILE"; then
-  error "Download failed: $ASSET_URL"
-  exit 1
-fi
+download_and_install() {
+  TMP_DIR="$(mktemp -d)"
+  TMP_FILE="${TMP_DIR}/${ASSET}"
 
-if [[ ! -s "$TMP_FILE" ]]; then
-  error "Downloaded file is empty"
-  exit 1
-fi
+  info "Downloading ${ASSET}..."
+  if ! $CURL "$ASSET_URL" -o "$TMP_FILE"; then
+    error "Download failed: $ASSET_URL"
+    exit 1
+  fi
 
-# ---------------------------------------------------------------------------
-# Verify checksum (best effort - does not fail the install if unavailable)
-# ---------------------------------------------------------------------------
-SHA_BIN=""
-command -v sha256sum >/dev/null 2>&1 && SHA_BIN="sha256sum"
-[[ -z "$SHA_BIN" ]] && command -v shasum >/dev/null 2>&1 && SHA_BIN="shasum -a 256"
+  if [[ ! -s "$TMP_FILE" ]]; then
+    error "Downloaded file is empty"
+    exit 1
+  fi
 
-if [[ -n "$SHA_BIN" ]]; then
-  if $CURL "$CHECKSUMS_URL" -o "${TMP_DIR}/SHA256SUMS" 2>/dev/null; then
-    EXPECTED="$(grep "$ASSET\$" "${TMP_DIR}/SHA256SUMS" | awk '{print $1}' || true)"
-    ACTUAL="$($SHA_BIN "$TMP_FILE" | awk '{print $1}')"
-    if [[ -n "$EXPECTED" && "$EXPECTED" == "$ACTUAL" ]]; then
-      success "Checksum verified"
-    elif [[ -n "$EXPECTED" ]]; then
-      error "Checksum mismatch for $ASSET"
-      exit 1
+  SHA_BIN=""
+  command -v sha256sum >/dev/null 2>&1 && SHA_BIN="sha256sum"
+  [[ -z "$SHA_BIN" ]] && command -v shasum >/dev/null 2>&1 && SHA_BIN="shasum -a 256"
+
+  if [[ -n "$SHA_BIN" ]]; then
+    if $CURL "$CHECKSUMS_URL" -o "${TMP_DIR}/SHA256SUMS" 2>/dev/null; then
+      EXPECTED="$(grep "$ASSET\$" "${TMP_DIR}/SHA256SUMS" | awk '{print $1}' || true)"
+      ACTUAL="$($SHA_BIN "$TMP_FILE" | awk '{print $1}')"
+      if [[ -n "$EXPECTED" && "$EXPECTED" == "$ACTUAL" ]]; then
+        success "Checksum verified"
+      elif [[ -n "$EXPECTED" ]]; then
+        error "Checksum mismatch for $ASSET"
+        exit 1
+      else
+        warn "No checksum entry found for $ASSET, skipping verification"
+      fi
     else
-      warn "No checksum entry found for $ASSET, skipping verification"
+      warn "SHA256SUMS unavailable, skipping checksum verification"
     fi
   else
-    warn "SHA256SUMS unavailable, skipping checksum verification"
+    warn "No sha256 tool found, skipping checksum verification"
   fi
-else
-  warn "No sha256 tool found, skipping checksum verification"
+
+  chmod +x "$TMP_FILE"
+
+  if [[ ! -d "$INSTALL_DIR" ]]; then
+    error "$INSTALL_DIR does not exist"
+    exit 1
+  fi
+
+  info "Installing to ${INSTALL_PATH}..."
+  if [[ -w "$INSTALL_DIR" ]]; then
+    mv -f "$TMP_FILE" "$INSTALL_PATH"
+  else
+    warn "Elevated permissions required for $INSTALL_DIR"
+    sudo mv -f "$TMP_FILE" "$INSTALL_PATH"
+  fi
+
+  success "Installed to ${INSTALL_PATH}"
+
+  if INSTALLED_VERSION="$(get_installed_version)"; then
+    echo
+    printf "%s\n" "$INSTALLED_VERSION"
+    success "${NAME} is ready to use"
+  else
+    warn "Installed, but could not run '${NAME} --version' to confirm"
+  fi
+}
+
+remove_binary() {
+  info "Removing ${INSTALL_PATH}..."
+  if [[ -w "$INSTALL_DIR" ]]; then
+    rm -f "$INSTALL_PATH"
+  else
+    sudo rm -f "$INSTALL_PATH"
+  fi
+  success "${NAME} has been removed"
+}
+
+# ---------------------------------------------------------------------------
+# Install or update
+# ---------------------------------------------------------------------------
+if [[ ! -x "$INSTALL_PATH" ]]; then
+  download_and_install
+  exit 0
 fi
 
-chmod +x "$TMP_FILE"
+CURRENT_VERSION="$(get_installed_version)"
+[[ -z "$CURRENT_VERSION" ]] && CURRENT_VERSION="unknown"
 
-# ---------------------------------------------------------------------------
-# Install
-# ---------------------------------------------------------------------------
-if [[ ! -d "$INSTALL_DIR" ]]; then
-  error "$INSTALL_DIR does not exist"
-  exit 1
+echo
+info "${NAME} is already installed"
+printf "Installed version: %s%s%s\n" "$BOLD" "$CURRENT_VERSION" "$RESET"
+if [[ -n "$LATEST_TAG" ]]; then
+  printf "Latest version:    %s%s%s\n" "$BOLD" "$LATEST_TAG" "$RESET"
+else
+  printf "Latest version:    %sunknown (could not reach GitHub API)%s\n" "$DIM" "$RESET"
+fi
+echo
+
+UP_TO_DATE=0
+if [[ -n "$LATEST_TAG" ]] && printf '%s' "$CURRENT_VERSION" | grep -qF "${LATEST_TAG#v}"; then
+  UP_TO_DATE=1
 fi
 
-info "Installing to ${INSTALL_PATH}..."
-if [[ -w "$INSTALL_DIR" ]]; then
-  mv -f "$TMP_FILE" "$INSTALL_PATH"
+if [[ "$UP_TO_DATE" -eq 1 ]]; then
+  success "You are already up to date"
+  prompt "Reinstall anyway? [y]es / [r]emove / [c]ancel (default: c): " "c"
+  case "$REPLY" in
+    y|Y|yes) download_and_install ;;
+    r|R|remove) remove_binary ;;
+    *) info "Cancelled, nothing changed" ;;
+  esac
 else
-  warn "Elevated permissions required for $INSTALL_DIR"
-  sudo mv -f "$TMP_FILE" "$INSTALL_PATH"
-fi
-
-success "Installed to ${INSTALL_PATH}"
-
-# ---------------------------------------------------------------------------
-# Verify install
-# ---------------------------------------------------------------------------
-if INSTALLED_VERSION="$("$INSTALL_PATH" --version 2>/dev/null)"; then
-  success "${NAME} ${INSTALLED_VERSION} is ready to use"
-else
-  warn "Installed, but could not run '${NAME} --version' to confirm"
+  prompt "A newer version is available. [u]pdate / [r]emove / [c]ancel (default: u): " "u"
+  case "$REPLY" in
+    u|U|update|y|Y|yes) download_and_install ;;
+    r|R|remove) remove_binary ;;
+    c|C|cancel) info "Cancelled, nothing changed" ;;
+    *)
+      warn "Unrecognized option '${REPLY}', defaulting to update"
+      download_and_install
+      ;;
+  esac
 fi
