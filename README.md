@@ -6,7 +6,7 @@
 <img alt="License MIT" src="https://img.shields.io/badge/license-MIT-blue.svg">
 <img alt="Language C" src="https://img.shields.io/badge/language-C-00599C.svg">
 <img alt="Platform" src="https://img.shields.io/badge/platform-Linux%20%7C%20WSL%20%7C%20macOS-lightgrey.svg">
-<img alt="Version" src="https://img.shields.io/badge/version-1.2.0-informational.svg">
+<img alt="Version" src="https://img.shields.io/badge/version-1.3.0-informational.svg">
 <a href="https://github.com/MaxEdgar/copy/actions/workflows/test.yml"><img alt="Build status" src="https://github.com/MaxEdgar/copy/actions/workflows/test.yml/badge.svg"></a>
 </p>
 

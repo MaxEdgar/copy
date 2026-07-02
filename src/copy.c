@@ -24,7 +24,7 @@
 #include <sys/wait.h>
 
 #define PROGRAM_NAME "copy"
-#define VERSION "1.2.0"
+#define VERSION "1.3.0"
 
 #define INITIAL_BUF (1024 * 256)            /* start at 256KB, grow as needed */
 #define MAX_BUF ((size_t)1024 * 1024 * 512) /* 512 MB safety ceiling, not a normal-use limit */
