@@ -1,9 +1,9 @@
 /*
- * copy - pipe stdin to the system clipboard, auto-detecting backend.
+ * copy - dumps stdin into the system clipboard, figures out the backend itself
  *
- * Works on Linux (X11, Wayland), WSL, and macOS.
+ * works on Linux (X11, Wayland), WSL, and macOS
  *
- * Usage:
+ * usage:
  *   echo hello | copy
  *   cat file.log | copy
  *   tail -f app.log | copy -n 20
@@ -31,14 +31,14 @@
 
 typedef struct {
     const char *bin;
-    const char *args[4]; /* NULL-terminated argv after bin */
+    const char *args[4]; /* argv after bin, NULL-terminated */
 } backend_t;
 
 typedef struct {
-    long n_lines;   /* -n: keep only the last N lines, 0 = disabled */
-    long n_chars;   /* -c: keep only the last N characters, 0 = disabled */
-    int print;      /* -p / --print: also print what was copied to stdout */
-    int strip_trailing_newline; /* default on; -k / --keep-newline disables */
+    long n_lines;   /* -n, keep last N lines, 0 = off */
+    long n_chars;   /* -c, keep last N chars, 0 = off */
+    int print;      /* -p, echo what got copied */
+    int strip_trailing_newline; /* on by default, -k turns it off */
 } options_t;
 
 static void print_usage(FILE *out) {
@@ -92,8 +92,7 @@ static int is_wsl(void) {
     return strstr(buf, "microsoft") != NULL || strstr(buf, "wsl") != NULL;
 }
 
-/* Run bin with args, feeding `data` (len bytes) to its stdin.
- * Returns 1 on success (exit code 0), 0 otherwise. */
+/* pipe data into bin, wait for it to exit. returns 1 on success */
 static int run_pipe(const char *bin, const char *const argv[], const char *data, size_t len) {
     int pipefd[2];
     if (pipe(pipefd) != 0) return 0;
@@ -106,7 +105,7 @@ static int run_pipe(const char *bin, const char *const argv[], const char *data,
     }
 
     if (pid == 0) {
-        /* child */
+        /* child, becomes the clipboard backend */
         close(pipefd[1]);
         dup2(pipefd[0], STDIN_FILENO);
         close(pipefd[0]);
@@ -121,14 +120,14 @@ static int run_pipe(const char *bin, const char *const argv[], const char *data,
         _exit(127);
     }
 
-    /* parent */
+    /* parent, feed the data through the pipe */
     close(pipefd[0]);
     size_t written = 0;
     while (written < len) {
         ssize_t w = write(pipefd[1], data + written, len - written);
         if (w < 0) {
-            if (errno == EINTR) continue; /* interrupted, just retry */
-            break;                        /* EPIPE (child exited early) or other error: stop writing */
+            if (errno == EINTR) continue; /* retry */
+            break;                        /* backend died early, give up */
         }
         written += (size_t)w;
     }
@@ -139,10 +138,8 @@ static int run_pipe(const char *bin, const char *const argv[], const char *data,
     return WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }
 
-/* Read all of stdin into a dynamically growing buffer.
- * On success returns a malloc'd buffer via *out_buf and length via *out_len.
- * Caller must free *out_buf. Returns 0 on success, non-zero on failure
- * (in which case *out_buf is NULL and an error has already been printed). */
+/* reads all of stdin into a growable buffer. caller frees *out_buf.
+ * returns 0 on success, 1 on failure (error already printed) */
 static int read_all_stdin(char **out_buf, size_t *out_len) {
     size_t cap = INITIAL_BUF;
     size_t total = 0;
@@ -181,7 +178,7 @@ static int read_all_stdin(char **out_buf, size_t *out_len) {
             free(buf);
             return 1;
         }
-        if (r == 0) break; /* EOF */
+        if (r == 0) break; /* eof */
         total += (size_t)r;
     }
 
@@ -190,9 +187,8 @@ static int read_all_stdin(char **out_buf, size_t *out_len) {
     return 0;
 }
 
-/* Trim input down to the last n_lines lines (like `tail -n`), in place.
- * Returns a pointer into buf where the kept region starts, and sets
- * *out_len to its length. Does not reallocate. */
+/* keep only the last n_lines lines, tail -n style. no realloc,
+ * just returns a pointer into the existing buffer */
 static const char *trim_to_last_lines(const char *buf, size_t len, long n_lines, size_t *out_len) {
     if (n_lines <= 0 || len == 0) {
         *out_len = len;
@@ -202,8 +198,7 @@ static const char *trim_to_last_lines(const char *buf, size_t len, long n_lines,
     size_t i;
     int lines_seen = 0;
 
-    /* Skip a single trailing newline, if present, so it doesn't get
-     * counted as an extra blank line boundary. */
+    /* ignore a trailing newline so it doesn't count as an extra line */
     size_t scan_end = len;
     if (scan_end > 0 && buf[scan_end - 1] == '\n') {
         scan_end--;
@@ -221,12 +216,12 @@ static const char *trim_to_last_lines(const char *buf, size_t len, long n_lines,
         }
     }
 
-    /* Fewer than n_lines newlines found: the whole input is <= n_lines lines. */
+    /* input has fewer than n_lines lines total, keep all of it */
     *out_len = len;
     return buf;
 }
 
-/* Trim input down to the last n_chars characters, in place (no realloc). */
+/* keep only the last n_chars characters, no realloc */
 static const char *trim_to_last_chars(const char *buf, size_t len, long n_chars, size_t *out_len) {
     if (n_chars <= 0 || (size_t)n_chars >= len) {
         *out_len = len;
@@ -311,9 +306,8 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* Without this, if the clipboard tool exits early while we're still
-     * writing to it, the kernel sends SIGPIPE and kills us outright instead
-     * of letting write() return EPIPE, which we already handle gracefully. */
+    /* ignore SIGPIPE so a dead clipboard backend doesn't kill us,
+     * we already handle the EPIPE from write() below */
     signal(SIGPIPE, SIG_IGN);
 
     char *buf = NULL;
@@ -394,8 +388,8 @@ int main(int argc, char **argv) {
         nc++;
     }
 
-    /* Fallback: env vars weren't conclusive (e.g. run from cron/su/script) -
-     * just try everything installed. */
+    /* env vars didn't give us a clear answer (cron, su, weird shells),
+     * just try whatever's installed */
     if (nc == 0) {
         struct { const char *bin; const char *a1, *a2; } fb[] = {
             {"wl-copy", NULL, NULL},
