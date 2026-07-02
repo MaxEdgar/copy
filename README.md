@@ -40,15 +40,16 @@ tail -f app.log | copy -n 20
 
 ## Quick install
 
-For Debian and Ubuntu based systems on amd64, this single command
-downloads the latest release and installs it.
+This single command downloads and runs the install script, which
+detects your OS and architecture, fetches the latest release, and
+installs the `copy` binary to `/usr/local/bin`.
 
 ```bash
-curl -fsSL https://github.com/MaxEdgar/copy/releases/latest/download/copy_1.2.0_amd64.deb -o /tmp/copy.deb && sudo dpkg -i /tmp/copy.deb && sudo apt-get install -f
+curl -fsSL https://raw.githubusercontent.com/MaxEdgar/copy/main/install.sh | bash
 ```
 
-This is a plain download and install of the packaged release, kept on
-one line for convenience. It is not a hosted install script. For every
+The script is safe to run more than once. Running it again simply
+updates an existing installation to the latest release. For every
 other platform, or if you would rather see exactly what each step
 does, use the full instructions under [Installation](#installation).
 
@@ -86,22 +87,23 @@ no display server or session to hold a clipboard.
 
 ## Installation
 
-### Debian, Ubuntu, Mint, and Pop!_OS on amd64
+### Prebuilt binary, on Linux (amd64 or arm64) or macOS (arm64)
 
-Download the latest `.deb` from the
+Download the binary for your platform from the
 [releases page](https://github.com/MaxEdgar/copy/releases), then run:
 
 ```bash
-sudo dpkg -i copy_1.2.0_amd64.deb
-sudo apt-get install -f
+chmod +x copy-linux-amd64
+sudo mv copy-linux-amd64 /usr/local/bin/copy
 ```
 
-The second command only installs anything if `dpkg` reports a missing
-clipboard backend; it will pull in `xclip` or an equivalent
-automatically.
+Substitute `copy-linux-arm64` or `copy-macos-arm64` for the binary
+name if you are on a different platform. Each binary is also
+available as a `.tar.gz` archive, and a `SHA256SUMS` file is provided
+alongside the assets to verify your download.
 
-This installs the `copy` binary to `/usr/bin/copy` and its manual page
-to `/usr/share/man/man1/copy.1.gz`.
+This installs the `copy` binary to `/usr/local/bin/copy`. You will
+still need a clipboard backend installed, as described below.
 
 ### Build from source, on any distribution with a C compiler
 
