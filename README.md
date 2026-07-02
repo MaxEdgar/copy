@@ -194,3 +194,5 @@ MIT. See [LICENSE](LICENSE).
 
 MaxEdgar
 https://github.com/MaxEdgar
+
+## Every star makes me really happy!
