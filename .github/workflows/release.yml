@@ -1,0 +1,285 @@
+# Release workflow
+#
+# Trigger: only when a GitHub Release is published (not on every push/tag).
+# This keeps release builds intentional -- a maintainer drafts and publishes
+# a release, and that single action kicks off building and attaching every
+# platform binary.
+#
+# Design summary:
+#   1. `build` runs as a matrix job, once per target platform, entirely in
+#      parallel. Each matrix leg only compiles and uploads a raw binary as
+#      a build artifact -- it does not touch the GitHub Release at all.
+#   2. `package` downloads every build artifact into one place, creates the
+#      .tar.gz archives and SHA256SUMS file, and re-uploads that as a single
+#      "release-assets" artifact. Keeping packaging as its own job (rather
+#      than doing it inside each matrix leg) means the archive/checksum
+#      logic exists in exactly one place instead of being duplicated four
+#      times across the matrix.
+#   3. `release` downloads that one packaged artifact bundle and is the only
+#      job with permission to write to the GitHub Release. This is the
+#      principle of least privilege: only one job in the whole workflow can
+#      actually publish anything.
+#
+# Extending this later (Debian packages, Homebrew, AUR, Winget, SBOM,
+# cosign/GPG signing) means adding a new job that depends on `package` and
+# consumes the same "release-assets" artifact -- see the commented stub
+# jobs near the bottom for exactly where that goes.
+
+name: Release
+
+on:
+  release:
+    types: [published]
+
+# Least-privilege default: nothing can write anywhere unless a job
+# explicitly requests it below (the `release` job overrides this locally).
+permissions:
+  contents: read
+
+# If a second release is published while this workflow is still running
+# for a prior tag, let both runs proceed independently -- release builds
+# should never be cancelled mid-flight by an unrelated trigger.
+concurrency:
+  group: release-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+env:
+  # Central place to bump the binary name if the project is ever renamed.
+  BINARY_NAME: copy
+
+jobs:
+  # ---------------------------------------------------------------------
+  # BUILD: compile once per target platform, in parallel, via a matrix.
+  # Each leg's only job is "produce a correct binary and hand it off" --
+  # no packaging, no archiving, no release interaction here.
+  # ---------------------------------------------------------------------
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.runs_on }}
+    strategy:
+      # If one platform fails to compile, we still want to see the result
+      # for the others rather than the whole matrix aborting immediately.
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-amd64
+            runs_on: ubuntu-24.04
+            cc: cc
+          - target: linux-arm64
+            runs_on: ubuntu-24.04
+            cc: aarch64-linux-gnu-gcc
+            cross_package: gcc-aarch64-linux-gnu
+          - target: macos-amd64
+            runs_on: macos-13        # last Intel-based macOS runner image
+            cc: cc
+          - target: macos-arm64
+            runs_on: macos-14        # Apple Silicon runner, native arm64
+            cc: cc
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      # Only the Linux ARM64 leg needs a cross-compiler installed; native
+      # legs (linux-amd64, both macOS legs) already have a working `cc`.
+      - name: Install cross-compiler
+        if: matrix.cross_package != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.cross_package }}
+
+      # The Makefile already respects `CC ?=` and `CFLAGS ?=`, so
+      # cross-compilation needs zero changes to the Makefile itself --
+      # we just override CC per matrix leg.
+      - name: Build
+        run: make CC=${{ matrix.cc }} CFLAGS="-O2 -Wall -Wextra"
+
+      # Defensive: `make` already produces a binary named `copy` with
+      # correct permissions via the compiler, but if this were ever built
+      # through a path that loses the executable bit (e.g. an artifact
+      # round-trip that doesn't preserve permissions on some runners),
+      # this guarantees it's still executable before upload.
+      - name: Ensure executable bit is set
+        run: chmod 755 ${{ env.BINARY_NAME }}
+
+      - name: Verify binary architecture
+        run: file ${{ env.BINARY_NAME }}
+
+      # Upload the raw binary only. Naming it after the matrix target now
+      # (rather than leaving it as the bare `copy`) means the packaging
+      # job can download all four artifacts into one directory without
+      # any of them colliding or overwriting each other.
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.target }}
+          path: ${{ env.BINARY_NAME }}
+          if-no-files-found: error
+          retention-days: 1
+
+  # ---------------------------------------------------------------------
+  # PACKAGE: single job, runs once, turns the four raw binaries into the
+  # final distributable set (renamed binaries + tarballs + checksums).
+  # This is where archive-format logic lives exactly once instead of
+  # being copy-pasted into every matrix leg above.
+  # ---------------------------------------------------------------------
+  package:
+    name: Package release assets
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      # Pull every build-* artifact down into one staging directory.
+      # Using a shared "artifacts/" root with subfolders keeps this
+      # step readable and avoids name collisions between targets.
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: build-*
+          path: artifacts
+          merge-multiple: false
+
+      - name: Assemble release assets
+        run: |
+          set -euo pipefail
+
+          mkdir -p dist
+
+          # Each downloaded artifact directory is named "build-<target>"
+          # and contains exactly one file: the raw binary called "copy".
+          # Walk each one, rename it to the public, target-qualified
+          # name, set correct permissions, and create a matching tarball.
+          for dir in artifacts/build-*; do
+            target="$(basename "$dir" | sed 's/^build-//')"
+            src="$dir/${BINARY_NAME}"
+            renamed="dist/${BINARY_NAME}-${target}"
+
+            cp "$src" "$renamed"
+            chmod 755 "$renamed"
+
+            # Reproducible archive creation: pin owner/group/mtime so the
+            # resulting tarball's bytes don't depend on the runner's clock
+            # or default UID, which keeps SHA256SUMS stable across re-runs
+            # of the same source.
+            tar \
+              --sort=name \
+              --mtime="${{ github.event.release.published_at }}" \
+              --owner=0 --group=0 --numeric-owner \
+              -czf "dist/${BINARY_NAME}-${target}.tar.gz" \
+              -C dist "$(basename "$renamed")"
+          done
+
+          ls -la dist
+
+      # Generated after every binary/tarball is in dist/, so it covers
+      # everything in one pass rather than being built incrementally.
+      - name: Generate SHA256SUMS
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload packaged release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  # ---------------------------------------------------------------------
+  # RELEASE: the only job that touches the GitHub Release. Everything
+  # above this point could fail loudly without ever having write access
+  # to anything -- this job is the single point where publishing happens.
+  # ---------------------------------------------------------------------
+  release:
+    name: Publish to GitHub Release
+    needs: package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write   # required to attach assets to the release
+    steps:
+      - name: Download packaged release assets
+        uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: dist
+
+      - name: Upload assets to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: dist/*
+          fail_on_unmatched_files: true
+
+      # A short, human-readable summary in the Actions log/UI -- useful
+      # when checking a release after the fact without opening every
+      # job's logs individually.
+      - name: Release summary
+        run: |
+          {
+            echo "## Release ${{ github.event.release.tag_name }} published"
+            echo ""
+            echo "| Asset | SHA256 |"
+            echo "|---|---|"
+            while read -r hash file; do
+              echo "| $file | \`$hash\` |"
+            done < dist/SHA256SUMS
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------
+  # FUTURE WORK -- intentionally not implemented yet.
+  #
+  # Each of these would be its own job below, gated with `needs: package`
+  # (or `needs: release` if it must run after publishing) so it consumes
+  # the same "release-assets" artifact instead of rebuilding anything.
+  # Uncommenting and filling one in should never require touching the
+  # `build` or `package` jobs above.
+  #
+  # debian-package:
+  #   name: Build .deb packages
+  #   needs: package
+  #   runs-on: ubuntu-24.04
+  #   steps:
+  #     - uses: actions/download-artifact@v4
+  #       with: { name: release-assets, path: dist }
+  #     # ... dpkg-deb packaging for amd64 + arm64, upload as its own
+  #     #     artifact or directly to the release.
+  #
+  # homebrew-release:
+  #   name: Update Homebrew tap
+  #   needs: release
+  #   runs-on: ubuntu-24.04
+  #   steps:
+  #     # ... bump formula in a homebrew-tap repo using the published
+  #     #     SHA256SUMS values, via a PAT with repo access to that tap.
+  #
+  # aur-release:
+  #   name: Update AUR package
+  #   needs: release
+  #   runs-on: ubuntu-24.04
+  #   steps:
+  #     # ... regenerate PKGBUILD + .SRCINFO, push to the AUR git remote.
+  #
+  # winget-release:
+  #   name: Submit Winget manifest
+  #   needs: release
+  #   runs-on: windows-latest
+  #   steps:
+  #     # ... wingetcreate or manual manifest PR to microsoft/winget-pkgs.
+  #
+  # sbom:
+  #   name: Generate SBOM
+  #   needs: package
+  #   runs-on: ubuntu-24.04
+  #   steps:
+  #     # ... anchore/sbom-action or syft, attach SBOM as a release asset.
+  #
+  # sign-artifacts:
+  #   name: Sign artifacts with cosign / GPG
+  #   needs: package
+  #   runs-on: ubuntu-24.04
+  #   steps:
+  #     # ... sigstore/cosign-installer, sign each tarball + SHA256SUMS,
+  #     #     upload .sig files alongside the existing release assets.
+  # ---------------------------------------------------------------------
