@@ -6,6 +6,9 @@
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/MaxEdgar/copy/main/install.sh | bash
 #
+# Uninstall:
+#   curl -fsSL https://raw.githubusercontent.com/MaxEdgar/copy/main/install.sh | bash -s -- --remove
+#
 set -Eeuo pipefail
 
 REPO="MaxEdgar/copy"
@@ -36,10 +39,13 @@ error()   { printf "%s✘ %s%s\n" "${RED}${BOLD}" "$1" "${RESET}" >&2; }
 
 TMP_DIR=""
 cleanup() {
-  [[ -n "$TMP_DIR" && -d "$TMP_DIR" ]] && rm -rf "$TMP_DIR"
+  if [[ -n "$TMP_DIR" && -d "$TMP_DIR" ]]; then
+    rm -rf "$TMP_DIR"
+  fi
+  return 0
 }
 trap cleanup EXIT
-trap 'error "Installation failed on line $LINENO"' ERR
+trap 'error "Script failed on line $LINENO"' ERR
 
 # ---------------------------------------------------------------------------
 # Dependency checks
@@ -50,13 +56,82 @@ require() {
     exit 1
   }
 }
+
+# ---------------------------------------------------------------------------
+# Argument parsing
+# ---------------------------------------------------------------------------
+ACTION="install"
+for arg in "$@"; do
+  case "$arg" in
+    --remove|--uninstall)
+      ACTION="uninstall"
+      ;;
+    -h|--help)
+      cat <<EOF
+Usage: install.sh [OPTION]
+
+  (no options)      install or update ${NAME} to ${INSTALL_PATH}
+  --remove          uninstall ${NAME} and remove all installed files
+  -h, --help        show this help message
+EOF
+      exit 0
+      ;;
+    *)
+      warn "Unknown option: $arg"
+      ;;
+  esac
+done
+
+# ---------------------------------------------------------------------------
+# Uninstall
+# ---------------------------------------------------------------------------
+uninstall() {
+  printf "%s%s uninstaller%s\n" "$BOLD" "$NAME" "$RESET"
+  printf "%sremoves %s and any files installed alongside it%s\n\n" "$DIM" "$NAME" "$RESET"
+
+  local found=0
+  local targets=(
+    "$INSTALL_PATH"
+    "/usr/local/share/man/man1/${NAME}.1"
+    "/usr/share/man/man1/${NAME}.1.gz"
+  )
+
+  for path in "${targets[@]}"; do
+    if [[ -e "$path" ]]; then
+      found=1
+      info "Removing ${path}..."
+      if [[ -w "$(dirname "$path")" ]]; then
+        rm -f "$path"
+      else
+        sudo rm -f "$path"
+      fi
+      success "Removed ${path}"
+    fi
+  done
+
+  if [[ "$found" -eq 0 ]]; then
+    warn "No installed files found, nothing to remove"
+    exit 0
+  fi
+
+  if command -v "$NAME" >/dev/null 2>&1; then
+    warn "'${NAME}' is still on PATH at $(command -v "$NAME"), remove it manually if needed"
+  else
+    success "${NAME} has been fully uninstalled"
+  fi
+  exit 0
+}
+
+require rm
+[[ "$ACTION" == "uninstall" ]] && uninstall
+
 require curl
 require uname
 require mktemp
 require mv
 require chmod
 
-printf "%s%s copy installer%s\n" "$BOLD" "$NAME" "$RESET"
+printf "%s%s installer%s\n" "$BOLD" "$NAME" "$RESET"
 printf "%sinstalls the latest release of %s to %s%s\n\n" "$DIM" "$NAME" "$INSTALL_PATH" "$RESET"
 
 # ---------------------------------------------------------------------------
