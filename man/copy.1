@@ -1,0 +1,116 @@
+.TH COPY 1 "2026" "copy 1.2.0" "User Commands"
+.SH NAME
+copy \- pipe stdin to the system clipboard
+.SH SYNOPSIS
+.B copy
+[\fIOPTIONS\fR]
+.SH DESCRIPTION
+.B copy
+reads all of standard input and writes it to the system clipboard,
+automatically detecting whether to use an X11, Wayland, WSL, or
+macOS clipboard backend.
+.PP
+It is intended to be used at the end of a shell pipeline, in place of
+redirecting to a file:
+.PP
+.RS
+.EX
+cat notes.txt | copy
+.EE
+.RE
+.PP
+No configuration is required. If no supported clipboard backend is
+installed on the system, \fBcopy\fR reports exactly which package to
+install for the detected session type.
+.SH OPTIONS
+.TP
+.BR \-n ", " \-\-lines " " \fIN\fR
+Only copy the last \fIN\fR lines of input, matching the behavior of
+.BR tail (1).
+Cannot be combined with \fB\-c\fR/\fB\-\-chars\fR.
+.TP
+.BR \-c ", " \-\-chars " " \fIN\fR
+Only copy the last \fIN\fR characters of input.
+Cannot be combined with \fB\-n\fR/\fB\-\-lines\fR.
+.TP
+.BR \-p ", " \-\-print
+Also print the text that was copied to standard output, so the
+result can be verified or piped further.
+.TP
+.BR \-k ", " \-\-keep\-newline
+Keep a single trailing newline if present in the copied text. By
+default, \fBcopy\fR strips one trailing newline, matching the
+behavior most users expect when pasting into a text field.
+.TP
+.BR \-h ", " \-\-help
+Print usage information and exit.
+.TP
+.BR \-v ", " \-\-version
+Print version and license information and exit.
+.SH EXIT STATUS
+.TP
+.B 0
+Input was successfully copied to the clipboard.
+.TP
+.B 1
+No input was provided, no clipboard backend was found, the backend
+failed to run, or an invalid option was given.
+.SH EXAMPLES
+Copy a short string:
+.RS
+.EX
+echo "hello" | copy
+.EE
+.RE
+.PP
+Copy the last 20 lines of a live log file:
+.RS
+.EX
+tail -f app.log | copy -n 20
+.EE
+.RE
+.PP
+Copy the last 500 characters of kernel messages and verify what was copied:
+.RS
+.EX
+dmesg | copy -c 500 -p
+.EE
+.RE
+.SH BACKENDS
+.B copy
+looks for the following tools, depending on session type, and uses
+whichever is installed:
+.TP
+.B X11
+.BR xclip (1)
+or
+.BR xsel (1)
+.TP
+.B Wayland
+.BR wl\-copy (1)
+(part of wl\-clipboard)
+.TP
+.B WSL
+.B clip.exe
+.TP
+.B macOS
+.BR pbcopy (1)
+.SH LIMITS
+Input is read into a dynamically growing in-memory buffer, with a
+512 MB safety ceiling to prevent unbounded memory use from a runaway
+input stream. If this ceiling is reached, \fBcopy\fR exits with an
+error and copies nothing rather than truncating the data silently.
+.SH AUTHOR
+Written by MaxEdgar.
+.SH REPORTING BUGS
+Report bugs or feature requests at
+.UR https://github.com/MaxEdgar/copy/issues
+.UE .
+.SH COPYRIGHT
+Copyright \(co 2026 MaxEdgar. License MIT: see the LICENSE file
+distributed with this program.
+.SH SEE ALSO
+.BR xclip (1),
+.BR xsel (1),
+.BR wl\-copy (1),
+.BR tail (1)
