@@ -1,29 +1,26 @@
-# Continuous Integration workflow
-#
-# Purpose: guarantee the project always builds, on every push and every
-# pull request, before anything reaches a release. This is intentionally
-# narrow in scope -- it does not lint, test, or package anything. It only
-# answers one question: "does `make` still succeed with strict warnings,
-# on the platforms we actually ship for?"
-#
-# This is deliberately kept separate from release.yml. Release builds are
-# about producing correct, distributable binaries for every target
-# architecture; CI is about fast, cheap feedback on every single commit.
-# Mixing the two would make ordinary pushes trigger a four-way matrix
-# build and slow down the feedback loop for no benefit.
+# CI: make sure the thing still builds on every push/PR.
+# Doesn't lint or test, just checks `make` succeeds with warnings on.
+# Kept separate from release.yml since that one's a full cross-platform
+# matrix and we don't want that running on every commit.
 
 name: Test
 
 on:
   push:
+    paths-ignore:
+      - "README.md"
+      - "LICENSE"
+      - "CHANGELOG.md"
   pull_request:
+    paths-ignore:
+      - "README.md"
+      - "LICENSE"
+      - "CHANGELOG.md"
 
 permissions:
   contents: read
 
-# Cancel any in-progress run for the same branch/PR when new commits
-# arrive, so CI doesn't queue up stale runs for commits nobody cares
-# about anymore. Unlike releases, CI runs are disposable.
+# cancel stale runs on new pushes to the same branch/PR
 concurrency:
   group: test-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -33,8 +30,7 @@ jobs:
     name: Build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
-      # Both platforms are equally important signal -- if one fails,
-      # still run the other so a single log gives the full picture.
+      # don't bail on one OS failing, we want to see both results
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, macos-14]
@@ -43,15 +39,10 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      # Strict warnings are enforced here, not just as a default in the
-      # Makefile, so CI stays authoritative even if someone's local
-      # CFLAGS environment variable silently loosens things.
+      # -Werror here so CI stays strict even if someone's local CFLAGS is looser
       - name: Build with strict warnings
         run: make CFLAGS="-O2 -Wall -Wextra -Werror"
 
-      # A build that produces a binary that doesn't run at all is still
-      # a failure worth catching immediately, even though this workflow
-      # isn't a full test suite.
       - name: Smoke test
         run: |
           ./copy --version
