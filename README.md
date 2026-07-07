@@ -219,8 +219,7 @@ pasting into a text field. Use `-k` to preserve it.
 * Requires an active display or session with a clipboard to copy into.
   It cannot copy into a clipboard on a headless server with no display
   attached, because no such clipboard exists there.
-* Maximum input size is 512 MB, enforced as a safety ceiling against
-  unbounded memory use, not a normal use limit.
+* Maximum input size is 512 MB.
 
 ## Contributing
 
